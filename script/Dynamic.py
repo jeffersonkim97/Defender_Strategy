@@ -23,7 +23,7 @@ class DynamicMap:
             y0=self.cam_y[nc]
 
             # Generate Camera
-            cam_nc = Camera(i, self.cam_dict, x0, y0)
+            cam_nc = Camera(nc, self.cam_dict, x0, y0)
             Cam_on_field[str(nc)] = {}
             Cam_on_field[str(nc)]['Camera'] = cam_nc
             Cam_on_field[str(nc)]['FOV'] = cam_nc.get_fov(x0, y0, t_in)
