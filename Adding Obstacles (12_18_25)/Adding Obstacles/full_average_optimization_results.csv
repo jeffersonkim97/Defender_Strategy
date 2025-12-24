@@ -1,0 +1,5 @@
+Path_Type,N_runs,Avg_Initial_Pd,Avg_Optimized_Pd,Avg_Time_s
+naive,1,0.7344,0.3338,18.9592
+RRTstar,1,0.4454,0.3607,28.0249
+STRRT,1,0.4934,0.3663,15.7191
+ParallelRRT,1,0.619,0.4,31.215
