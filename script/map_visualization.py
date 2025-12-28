@@ -58,14 +58,28 @@ def visualize_map_at_time(map_in, cam_dict, t: float, sensor_alpha: float = 0.5,
         buildings.append(poly)
 
     # ---- Cameras & spec ----
-    cx = np.array(cam_dict["x"], dtype=float)
-    cy = np.array(cam_dict["y"], dtype=float)
-    spec = cam_dict["spec"]
+    # Directional sensors
+    cx = np.array(cam_dict['directional']["x"], dtype=float)
+    cy = np.array(cam_dict['directional']["y"], dtype=float)
+    spec = cam_dict['directional']["spec"]
     init_angles = np.array(spec["init_angle"], dtype=float)          # radians
     bound_arr = np.array(spec["bound"], dtype=float)                 # (n,2) = [+max, -max]
     fov_half = float(spec["fov"][0])                                 # radians
     fov_range = float(spec["fov"][1])                                # map units
     panspeeds = np.array(spec["panspeed"], dtype=float)              # rad/time
+
+    # Compute facing angles at time t with bounce pan
+    facings = np.array([
+        _bounce_angle(init_angles[i], bound_arr[i,0], bound_arr[i,1], panspeeds[i], t)
+        for i in range(len(cx))
+    ], dtype=float)
+    
+    # Directional sensors
+    ox = np.array(cam_dict['omnidirectional']["x"], dtype=float)
+    oy = np.array(cam_dict['omnidirectional']["y"], dtype=float)
+    spec_omni = cam_dict['omnidirectional']["spec"]
+    fov_half_omni = float(spec["fov"][0])                                 # radians
+    fov_range_omni = float(spec["fov"][1])                                # map units
 
     # Compute facing angles at time t with bounce pan
     facings = np.array([
@@ -84,7 +98,8 @@ def visualize_map_at_time(map_in, cam_dict, t: float, sensor_alpha: float = 0.5,
         ax.add_patch(PolyPatch(poly, closed=True, facecolor="black", edgecolor="black", alpha=1.0))
 
     # Sensors: green circles
-    ax.scatter(cx, cy, s=36, c="green", marker="o", zorder=3, label="sensors")
+    ax.scatter(cx, cy, s=36, c="green", marker="o", zorder=3, label="Directional sensors")
+    ax.scatter(ox, oy, s=36, c='orange', marker='D', zorder=3, label='Omnidirectional sensors')
 
     # FOV wedges: green with alpha
     for i in range(len(cx)):
@@ -100,6 +115,11 @@ def visualize_map_at_time(map_in, cam_dict, t: float, sensor_alpha: float = 0.5,
             zorder=2
         )
         ax.add_patch(wedge)
+    
+    # Omnidirectional sensor
+    for i in range(len(ox)):
+        omni_circle = plt.Circle((ox[i], oy[i]), fov_range_omni, color='orange', alpha=0.25, clip_on=True, zorder=0)
+        ax.add_patch(omni_circle)
 
     ax.set_xlim(xmin, xmax)
     ax.set_ylim(ymin, ymax)

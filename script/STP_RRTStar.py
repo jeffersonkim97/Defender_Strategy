@@ -90,25 +90,6 @@ class STP_RRTStar():
 
         return [xrand, yrand, trand]
 
-    # def reachable(self, q0, q1, forward=True):
-    #     """
-    #     Check if q1 is within reachable set from q0
-    #     """
-    #     dx = np.abs(q1[0]-q0[0])
-    #     dy = np.abs(q1[1]-q0[1])
-    #     dd = np.sqrt(dx**2 + dy**2)
-    #     dt = q1[2]-q0[2]
-
-    #     if dd == 0:
-    #         return True
-    #     else:
-    #         if forward and dt > 0 and dd/dt <= self.vmax:
-    #             return True
-    #         elif not forward and dt < 0 and dd/dt <= self.vmax:
-    #             return True
-    #         return False
-
-
     # Updated version to ensure that the speed constraint is enforced
     # for both the forward and backward trees
     def reachable(self, q0, q1, forward=True):
@@ -191,6 +172,45 @@ class STP_RRTStar():
             dtnorm = dt/norm*self.vmax
             qnew = [q0[0]+dxnorm, q0[1]+dynorm, q0[2]+dtnorm]
         return qnew
+    
+    
+    # Update: Extract angle condition of sensor i at given t
+    def _bounce_angle(self, theta0, bound_plus, bound_minus, panspeed, t):
+        """
+        Bounce-pan angle inside [theta0+bound_minus, theta0+bound_plus] at time t.
+        Angles are radians; panspeed is rad per unit time.
+        """
+        lo = theta0 + float(bound_minus)
+        hi = theta0 + float(bound_plus)
+        if lo > hi:
+            lo, hi = hi, lo
+        span = hi - lo
+        if span <= 1e-12 or abs(panspeed) <= 1e-12:
+            return theta0
+        raw = theta0 + panspeed * t
+        period = 2.0 * span
+        off = (raw - lo) % period
+        return (lo + off) if (off <= span) else (hi - (off - span))
+    
+    def detection_Cost(self, qa, qs, dt1, dt2, param_lambda, param_beta):
+        """
+        Compute detection cost: Elfes's model
+        Inputs:
+            qa: [x, y, t] attacker position
+            qs: [x, y] sensor position
+        """
+
+        dist_def_to_atk = self.distance(qa, qs)
+
+        if dist_def_to_atk <= dt1:
+            detection_cost = 1
+        elif dist_def_to_atk > dt1 and dist_def_to_atk < dt2:
+            detection_cost = np.exp(-param_lambda*(dist_def_to_atk-dt1)**param_beta)
+        else:
+            detection_cost = 0
+
+        return detection_cost
+        
 
     def validate(self, q, vehicle_radius=None):
         """
@@ -240,20 +260,59 @@ class STP_RRTStar():
 
             # Check if the vehicle's collision boundary intersects the static obstacle
             if vehicle_collision_bound.intersects(obstacle_polygon):
-                 checkStatic = False
-                 break # Collision found, no need to check other obstacles
-            
-        checkDynamic = True
+                 return False
+        
+        # Updated with detection cost for sensor FOVs    
+        # Initialize detection cost
+        cumulative_detection_cost = 0
+        
+        # Check for omni-directional sensor at fixed position
+        n_omni = self.cam_dict['n_omni']
+        omni_sensor = self.cam_dict['omnidirectional']
+        omni_sensor_detection_param = self.cam_dict['detection']['omnidirectional']
+        for omni_i in range(n_omni):
+            cumulative_detection_cost += self.detection_Cost(qa=q,
+                                                             qs=[omni_sensor['x'][i], omni_sensor['y'][i]],
+                                                             dt1=omni_sensor['spec']['fov'][1]/100,
+                                                             dt2=omni_sensor['spec']['fov'][1],
+                                                             param_lambda=omni_sensor_detection_param['param_lambda'],
+                                                             param_beta=omni_sensor_detection_param['param_beta'])
+        
         # Check for dynamic
-        for i in range(self.cam_dict['n']):
-            cameras = self.dmap.gen_cam(i, tGiven)
-            cam_i = cameras[str(i)]['FOV_Poly']
-            if cam_i.intersects(vehicle_collision_bound) is True:
-                checkDynamic = False
+        n_direc = self.cam_dict['n_direc']
+        direc_sensor = self.cam_dict['directional']
+        direc_sensor_detection_param = self.cam_dict['detection']['directional']
+        
+        cx = np.array(direc_sensor['x'], dtype=float)
+        cy = np.array(direc_sensor['y'], dtype=float)
+        spec = direc_sensor['spec']
+        init_angles = np.array(spec["init_angle"], dtype=float)
+        bound_arr = np.array(spec["bound"], dtype=float)
+        fov_half = float(spec["fov"][0])
+        fov_range = float(spec["fov"][1])
+        panspeeds = np.array(spec["panspeed"], dtype=float)
+        
+        for i in range(n_direc):
+            def fov_sector_polygon(cx, cy, theta_rad, fov_half_rad, rng, n_arc=64):
+                # theta_rad: CCW from +x, radians
+                c, s = np.cos(theta_rad), np.sin(theta_rad)
+                R = np.array([[c, -s],[s,  c]])        # det +1 rotation
+                phis = np.linspace(-fov_half_rad, +fov_half_rad, int(n_arc))
+                arc_local = np.stack([rng*np.cos(phis), rng*np.sin(phis)], axis=1)  # (n,2)
+                arc_world = (R @ arc_local.T).T + np.array([cx, cy])
+                pts = np.vstack([[cx, cy], arc_world, [cx, cy]])  # apex → arc → apex
+                return Polygon(pts)
+
+            theta = self._bounce_angle(init_angles[i], bound_arr[i,0], bound_arr[i,1], panspeeds[i], tGiven)  # radians, CCW
+            cam_poly = fov_sector_polygon(cx[i], cy[i], theta, fov_half, fov_range)
+            if cam_poly.covers(vehicle_collision_bound):
+                # checkDynamic = False
+                # break
+                cumulative_detection_cost += self.detection_Cost(qa=q, qs=[cx[i], cy[i]])
         
         # True: Collision-Free
         # False: Collision
-        return bool(checkInMap) and bool(checkDynamic) and bool(checkStatic) 
+        return bool(checkInMap) and bool(checkStatic), cumulative_detection_cost
 
     def check_route(self, q1, q2, nInterpolate, vehicle_radius=None):
         """
@@ -380,7 +439,7 @@ class STP_RRTStar():
                         qnew = self.extend(qclosest, qrand, self.max_time) # Original version of extend
 
                         # Validate
-                        validationCheck = self.validate(qnew)
+                        validationCheck, cost = self.validate(qnew)
                         if validationCheck is True and self.check_route(qclosest, qrand, nInterpolate=100, vehicle_radius=self.vehicle['radius']) is True:
                             break
 
@@ -399,8 +458,14 @@ class STP_RRTStar():
                 proximity = 0.1 #CHANGE THIS BASED ON MAP SIZE
                 
                 if k > 1:
+                    # Heuristics for weight selection
+                    detection_cost_weight = 2
+                    distance_cost_weight = 1
+                    
                     qmin = qclosest
-                    cost_old = self.distance(qclosest, qnew)
+                    temp, qclosest_cost = self.validate(qnew)
+                    detection_cost_old = qclosest_cost
+                    distance_cost_old = self.distance(qclosest, qnew)
                     if np.mod(k,2) == 0:
                         neighbor_vector = self.find_neighbors_proximity(proximity, qnew, V_RRTCa)
                     else:
@@ -409,6 +474,9 @@ class STP_RRTStar():
                     # Rewiring Step
                     if len(neighbor_vector) > 0:
                         for v in neighbor_vector:
+                            temp, v_cost = self.validate(v)
+                            temp, qnew_cost = self.validate(qnew)
+                            
                             if cost_old + self.distance(v, qnew) < self.distance(qclosest, v) and self.check_route(v, qnew):
                                 cost_old = cost_old + self.distance(v, qnew)
                                 qmin = v

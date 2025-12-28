@@ -263,9 +263,15 @@ def mount_sensors_on_edges(num_sensors: int,
 
 def build_cam_dict_schema(
     sensors: List[Dict],
-    # FOV
+    # Sensor categories
+    n_direc: int,
+    n_omni: int,
+    # FOV for directional
     fov_half_rad: float,
     max_range: float,
+    # FOV for omnidirectional
+    fov_half_rad_omni: float,
+    max_range_omni:float,
     # Bounds (if auto_outward_bounds=False, we treat these as desired limits and then clamp)
     bound_plus: float,
     bound_minus: float,
@@ -276,7 +282,10 @@ def build_cam_dict_schema(
     rng_seed: int = 2,
     # --- NEW defaults ---
     auto_outward_bounds: bool = True,
-    max_outward_pan_deg: float = 85.0
+    max_outward_pan_deg: float = 85.0,
+    # Detection model
+    param_lambda: Tuple[float, float] = [1, 1],
+    param_beta: Tuple[float, float] = [1, 1]
 ) -> Dict:
     """
     Build cam_dict in YOUR schema.
@@ -296,11 +305,18 @@ def build_cam_dict_schema(
     """
     rng = random.Random(rng_seed)
 
-    xs, ys, init_angles = [], [], []
-    for s in sensors:
-        xs.append(float(s["pos"][0]))
-        ys.append(float(s["pos"][1]))
-        init_angles.append(float(s["theta0"]))
+    # Directional sensors:
+    xs_direc, ys_direc, init_angles_direc = [], [], []
+    for s in sensors[0:n_direc]:
+        xs_direc.append(float(s["pos"][0]))
+        ys_direc.append(float(s["pos"][1]))
+        init_angles_direc.append(float(s["theta0"]))
+
+    # Omnidirectional sensors:
+    xs_omni, ys_omni = [], []
+    for s in sensors[n_direc:n_direc+n_omni]:
+        xs_omni.append(float(s["pos"][0]))
+        ys_omni.append(float(s["pos"][1]))
 
     # Compute bounds per sensor
     cap = math.radians(max_outward_pan_deg)
@@ -308,7 +324,7 @@ def build_cam_dict_schema(
     bounds: List[List[float]] = []
     if auto_outward_bounds:
         # Force symmetric outward-only bounds for every sensor
-        for _ in sensors:
+        for _ in sensors[0:n_direc]:
             bounds.append([+cap, -cap])
     else:
         # Clamp requested bounds to never exceed ±cap
@@ -324,14 +340,35 @@ def build_cam_dict_schema(
 
     cam_dict = {
         "n": len(sensors),
-        "x": np.array(xs, dtype=float),
-        "y": np.array(ys, dtype=float),
-        "spec": {
-            "init_angle": init_angles,                  # radians
-            "bound": np.array(bounds, dtype=float),     # per-sensor [ +, - ] (relative to init_angle)
-            "fov": [float(fov_half_rad), float(max_range)],
-            "cam_time": [int(cam_period), float(cam_increment)],
-            "panspeed": panspeeds                       # rad / time
+        "n_direc": n_direc,
+        "n_omni": n_omni,
+        "directional": {
+            "x": np.array(xs_direc, dtype=float),
+            "y": np.array(ys_direc, dtype=float),
+            "spec": {
+                "init_angle": init_angles_direc,                  # radians
+                "bound": np.array(bounds, dtype=float),     # per-sensor [ +, - ] (relative to init_angle)
+                "fov": [float(fov_half_rad), float(max_range)],
+                "cam_time": [int(cam_period), float(cam_increment)],
+                "panspeed": panspeeds[0:n_direc]                       # rad / time
+            },   
+        },
+        "omnidirectional": {
+            "x": np.array(xs_omni, dtype=float),
+            "y": np.array(ys_omni, dtype=float),
+            "spec": {
+                "fov": [float(fov_half_rad_omni), float(max_range_omni)],
+            },
+        },
+        "detection": {
+            "directional": {
+                "param_lambda": param_lambda[0],
+                "param_beta": param_beta[0]
+            },
+            "omnidirectional": {
+                "param_lambda": param_lambda[1],
+                "param_beta": param_beta[1]
+            }
         }
     }
     return cam_dict
@@ -343,10 +380,14 @@ def build_cam_dict_schema(
 
 def generate_map(map_size: Tuple[float, float] = (100.0, 100.0),
                  num_buildings: int = 8,
-                 num_sensors: int = 16,
+                 num_directional_sensors: int = 16,
+                 num_omni_sensors: int = 16,
                  # FOV (radians, range)
                  fov_half_rad: float = math.radians(25.0),
                  max_range: float = 12.0,
+                 # FOV (radians, range) for Omnidirectional sensors
+                 fov_half_rad_omni: float = math.radians(25.0),
+                 max_range_omni: float = 12.0,
                  # Legacy inputs for bounds (kept for compatibility; ignored if auto_outward_bounds=True)
                  bound_plus: float = math.pi / 2.0,
                  bound_minus: float = -math.pi / 2.0,
@@ -361,7 +402,10 @@ def generate_map(map_size: Tuple[float, float] = (100.0, 100.0),
                  # NEW defaults controlling “outward only” behavior
                  auto_outward_bounds: bool = True,
                  max_outward_pan_deg: float = 85.0,
-                 outward_offset: float = 1e-3) -> Tuple[Dict, Dict]:
+                 outward_offset: float = 1e-3,
+                 # Detection model
+                 param_lambda: Tuple[float, float] = [1, 1],
+                 param_beta: Tuple[float, float]= [1, 1]) -> Tuple[Dict, Dict]:
     """
     Generate buildings + edge-mounted sensors and return (map_in, cam_dict) in YOUR schema.
 
@@ -401,7 +445,7 @@ def generate_map(map_size: Tuple[float, float] = (100.0, 100.0),
 
     # 2) Sensors
     sensors = mount_sensors_on_edges(
-        num_sensors=num_sensors,
+        num_sensors=num_directional_sensors+num_omni_sensors,
         buildings=buildings,
         rng_seed=rng_seed + 1,
         outward_offset=outward_offset,
@@ -418,8 +462,12 @@ def generate_map(map_size: Tuple[float, float] = (100.0, 100.0),
     # 4) cam_dict (init_angle outward; bounds default outward-only)
     cam_dict = build_cam_dict_schema(
         sensors=sensors,
+        n_direc=num_directional_sensors,
+        n_omni= num_omni_sensors,
         fov_half_rad=fov_half_rad,
         max_range=max_range,
+        fov_half_rad_omni=fov_half_rad_omni,
+        max_range_omni=max_range_omni,
         bound_plus=bound_plus,
         bound_minus=bound_minus,
         panspeed_range=panspeed_range,
@@ -427,7 +475,9 @@ def generate_map(map_size: Tuple[float, float] = (100.0, 100.0),
         cam_increment=cam_increment,
         rng_seed=rng_seed + 2,
         auto_outward_bounds=auto_outward_bounds,
-        max_outward_pan_deg=max_outward_pan_deg
+        max_outward_pan_deg=max_outward_pan_deg,
+        param_lambda=param_lambda,
+        param_beta=param_beta
     )
 
     # 5) map_in top-level fields (your pattern)
