@@ -28,7 +28,7 @@ def _bounce_angle(theta0: float, bound_plus: float, bound_minus: float, panspeed
     off = (raw - lo) % period
     return (lo + off) if (off <= span) else (hi - (off - span))
 
-def visualize_map_at_time(map_in, cam_dict, t: float, sensor_alpha: float = 0.5, ax=None):
+def visualize_map_at_time(map_in, cam_dict, t: float, sensor_alpha: float = 0.5, ax=None, algorithm_result: dict=None, display_vertex=False):
     """
     Visualize the operation map at time t using your schema.
 
@@ -43,6 +43,7 @@ def visualize_map_at_time(map_in, cam_dict, t: float, sensor_alpha: float = 0.5,
         t: time (same units as your panspeed / cam_time increment)
         sensor_alpha: alpha for the green FOV wedges
         ax: optional matplotlib Axes; if None, a new figure/axes is created
+        algorithm_result: STP-RRT* algorithm result
 
     Returns:
         fig, ax
@@ -73,13 +74,6 @@ def visualize_map_at_time(map_in, cam_dict, t: float, sensor_alpha: float = 0.5,
         _bounce_angle(init_angles[i], bound_arr[i,0], bound_arr[i,1], panspeeds[i], t)
         for i in range(len(cx))
     ], dtype=float)
-    
-    # Directional sensors
-    ox = np.array(cam_dict['omnidirectional']["x"], dtype=float)
-    oy = np.array(cam_dict['omnidirectional']["y"], dtype=float)
-    spec_omni = cam_dict['omnidirectional']["spec"]
-    fov_half_omni = float(spec["fov"][0])                                 # radians
-    fov_range_omni = float(spec["fov"][1])                                # map units
 
     # Compute facing angles at time t with bounce pan
     facings = np.array([
@@ -99,7 +93,20 @@ def visualize_map_at_time(map_in, cam_dict, t: float, sensor_alpha: float = 0.5,
 
     # Sensors: green circles
     ax.scatter(cx, cy, s=36, c="green", marker="o", zorder=3, label="Directional sensors")
-    ax.scatter(ox, oy, s=36, c='orange', marker='D', zorder=3, label='Omnidirectional sensors')
+    if cam_dict['n_omni'] != 0:
+        # Omnidirectional sensors
+        ox = np.array(cam_dict['omnidirectional']["x"], dtype=float)
+        oy = np.array(cam_dict['omnidirectional']["y"], dtype=float)
+        spec_omni = cam_dict['omnidirectional']["spec"]
+        fov_half_omni = float(spec["fov"][0])                                 # radians
+        fov_range_omni = float(spec["fov"][1])                                # map units
+        ax.scatter(ox, oy, s=36, c='orange', marker='D', zorder=3, label='Omnidirectional sensors')
+        
+        # Omnidirectional sensor
+        for i in range(len(ox)):
+            omni_circle = plt.Circle((ox[i], oy[i]), fov_range_omni, color='orange', alpha=0.25, clip_on=True, zorder=0)
+            ax.add_patch(omni_circle)
+
 
     # FOV wedges: green with alpha
     for i in range(len(cx)):
@@ -115,12 +122,36 @@ def visualize_map_at_time(map_in, cam_dict, t: float, sensor_alpha: float = 0.5,
             zorder=2
         )
         ax.add_patch(wedge)
+        
+    # If algorithm result was inputted:
+    if algorithm_result is not None:
+        path_alpha=0.15
+        rrt_path = algorithm_result['path']
+        Vstart = algorithm_result['Vstart']
+        Vgoal = algorithm_result['Vgoal']
+        Estart = algorithm_result['Estart']
+        Egoal = algorithm_result['Egoal']
+        
+        if display_vertex:
+            for vi in Vstart:
+                ax.plot(vi[0], vi[1], '.r', alpha=path_alpha)
+            for V_key in range(len(Vgoal.keys())):
+                for vi in Vgoal[str(V_key)]:
+                    ax.plot(vi[0], vi[1], '.b', alpha=path_alpha)
+            for Ei in Estart:
+                E0 = Ei[0]
+                E1 = Ei[1]
+                ax.plot([E0[0], E1[0]], [E0[1], E1[1]], '-r', alpha=path_alpha)
+            for E_key in range(len(Egoal.keys())):
+                for Ei in Egoal[str(E_key)]:
+                    E0 = Ei[0]
+                    E1 = Ei[1]
+                    ax.plot([E0[0], E1[0]], [E0[1], E1[1]], '-b', alpha=path_alpha)
+        for pi in range(len(rrt_path)-1):
+            p0 = rrt_path[pi]
+            p1 = rrt_path[pi+1]
+            ax.plot([p0[0], p1[0]], [p0[1], p1[1]], '-', color='brown')
     
-    # Omnidirectional sensor
-    for i in range(len(ox)):
-        omni_circle = plt.Circle((ox[i], oy[i]), fov_range_omni, color='orange', alpha=0.25, clip_on=True, zorder=0)
-        ax.add_patch(omni_circle)
-
     ax.set_xlim(xmin, xmax)
     ax.set_ylim(ymin, ymax)
     ax.set_aspect("equal", adjustable="box")

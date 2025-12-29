@@ -34,7 +34,7 @@ class STP_RRTStar():
         self.dmap = dmap # dynamic map object
         self.max_time = max_time
         self.map_in = map_in
-        print('12/10 10:42 AM version initialized')
+        print('STP-RRT* initialized')
 
 
     # ------------------------- STP-RRT* Subfunctions ----------------------------------------------#
@@ -239,6 +239,9 @@ class STP_RRTStar():
                 checkInMap = False
         else:
             checkInMap = False
+            
+        if not checkInMap:
+            return False, 0.0
 
         # NEW: Check for static obstacles
         checkStatic = True
@@ -260,7 +263,7 @@ class STP_RRTStar():
 
             # Check if the vehicle's collision boundary intersects the static obstacle
             if vehicle_collision_bound.intersects(obstacle_polygon):
-                 return False
+                 return False, 0.0
         
         # Updated with detection cost for sensor FOVs    
         # Initialize detection cost
@@ -268,51 +271,57 @@ class STP_RRTStar():
         
         # Check for omni-directional sensor at fixed position
         n_omni = self.cam_dict['n_omni']
-        omni_sensor = self.cam_dict['omnidirectional']
-        omni_sensor_detection_param = self.cam_dict['detection']['omnidirectional']
-        for omni_i in range(n_omni):
-            cumulative_detection_cost += self.detection_Cost(qa=q,
-                                                             qs=[omni_sensor['x'][i], omni_sensor['y'][i]],
-                                                             dt1=omni_sensor['spec']['fov'][1]/100,
-                                                             dt2=omni_sensor['spec']['fov'][1],
-                                                             param_lambda=omni_sensor_detection_param['param_lambda'],
-                                                             param_beta=omni_sensor_detection_param['param_beta'])
+        if n_omni > 0:
+            omni_sensor = self.cam_dict['omnidirectional']
+            omni_sensor_detection_param = self.cam_dict['detection']['omnidirectional']
+            for omni_i in range(n_omni):
+                cumulative_detection_cost += self.detection_Cost(qa=q,
+                                                                qs=[omni_sensor['x'][omni_i], omni_sensor['y'][omni_i]],
+                                                                dt1=omni_sensor['spec']['fov'][1]/100,
+                                                                dt2=omni_sensor['spec']['fov'][1],
+                                                                param_lambda=omni_sensor_detection_param['param_lambda'],
+                                                                param_beta=omni_sensor_detection_param['param_beta'])
         
         # Check for dynamic
         n_direc = self.cam_dict['n_direc']
-        direc_sensor = self.cam_dict['directional']
-        direc_sensor_detection_param = self.cam_dict['detection']['directional']
-        
-        cx = np.array(direc_sensor['x'], dtype=float)
-        cy = np.array(direc_sensor['y'], dtype=float)
-        spec = direc_sensor['spec']
-        init_angles = np.array(spec["init_angle"], dtype=float)
-        bound_arr = np.array(spec["bound"], dtype=float)
-        fov_half = float(spec["fov"][0])
-        fov_range = float(spec["fov"][1])
-        panspeeds = np.array(spec["panspeed"], dtype=float)
-        
-        for i in range(n_direc):
-            def fov_sector_polygon(cx, cy, theta_rad, fov_half_rad, rng, n_arc=64):
-                # theta_rad: CCW from +x, radians
-                c, s = np.cos(theta_rad), np.sin(theta_rad)
-                R = np.array([[c, -s],[s,  c]])        # det +1 rotation
-                phis = np.linspace(-fov_half_rad, +fov_half_rad, int(n_arc))
-                arc_local = np.stack([rng*np.cos(phis), rng*np.sin(phis)], axis=1)  # (n,2)
-                arc_world = (R @ arc_local.T).T + np.array([cx, cy])
-                pts = np.vstack([[cx, cy], arc_world, [cx, cy]])  # apex → arc → apex
-                return Polygon(pts)
+        if n_direc > 0:
+            direc_sensor = self.cam_dict['directional']
+            direc_sensor_detection_param = self.cam_dict['detection']['directional']
+            
+            cx = np.array(direc_sensor['x'], dtype=float)
+            cy = np.array(direc_sensor['y'], dtype=float)
+            spec = direc_sensor['spec']
+            init_angles = np.array(spec["init_angle"], dtype=float)
+            bound_arr = np.array(spec["bound"], dtype=float)
+            fov_half = float(spec["fov"][0])
+            fov_range = float(spec["fov"][1])
+            panspeeds = np.array(spec["panspeed"], dtype=float)
+            
+            for i in range(n_direc):
+                def fov_sector_polygon(cx, cy, theta_rad, fov_half_rad, rng, n_arc=64):
+                    # theta_rad: CCW from +x, radians
+                    c, s = np.cos(theta_rad), np.sin(theta_rad)
+                    R = np.array([[c, -s],[s,  c]])        # det +1 rotation
+                    phis = np.linspace(-fov_half_rad, +fov_half_rad, int(n_arc))
+                    arc_local = np.stack([rng*np.cos(phis), rng*np.sin(phis)], axis=1)  # (n,2)
+                    arc_world = (R @ arc_local.T).T + np.array([cx, cy])
+                    pts = np.vstack([[cx, cy], arc_world, [cx, cy]])  # apex → arc → apex
+                    return Polygon(pts)
 
-            theta = self._bounce_angle(init_angles[i], bound_arr[i,0], bound_arr[i,1], panspeeds[i], tGiven)  # radians, CCW
-            cam_poly = fov_sector_polygon(cx[i], cy[i], theta, fov_half, fov_range)
-            if cam_poly.covers(vehicle_collision_bound):
-                # checkDynamic = False
-                # break
-                cumulative_detection_cost += self.detection_Cost(qa=q, qs=[cx[i], cy[i]])
+                theta = self._bounce_angle(init_angles[i], bound_arr[i,0], bound_arr[i,1], panspeeds[i], tGiven)  # radians, CCW
+                cam_poly = fov_sector_polygon(cx[i], cy[i], theta, fov_half, fov_range)
+                if cam_poly.covers(vehicle_collision_bound):
+                    # checkDynamic = False
+                    # break
+                    cumulative_detection_cost += self.detection_Cost(qa=q, qs=[cx[i], cy[i]],
+                                                                    dt1=direc_sensor['spec']['fov'][1]/100,
+                                                                    dt2=direc_sensor['spec']['fov'][1],
+                                                                    param_lambda=direc_sensor_detection_param['param_lambda'],
+                                                                    param_beta=direc_sensor_detection_param['param_beta'])
         
         # True: Collision-Free
         # False: Collision
-        return bool(checkInMap) and bool(checkStatic), cumulative_detection_cost
+        return (bool(checkInMap) and bool(checkStatic)), cumulative_detection_cost
 
     def check_route(self, q1, q2, nInterpolate, vehicle_radius=None):
         """
@@ -370,9 +379,13 @@ class STP_RRTStar():
                 0 <= q[1]-v[1] <= prox:
                 output.append(v)
         return output
+    
+    ##########################################################################################
+    ############################### Main STP-RRT* Function ###################################
+    ##########################################################################################
 
     """Parallel RRT in 2D Space-Time"""
-    def standard_Parallel_RRT(self, x0, nPartition, compTimeLimit, tf0, tfn):
+    def standard_Parallel_RRT(self, x0, nPartition, compTimeLimit, tf0, tfn, debug=False):
         RRTP_total_time = []
         RRTP_total_distance = []
         total_path_time = 0
@@ -408,13 +421,18 @@ class STP_RRTStar():
 
         checkIfPathExist = False
         start = time.time()
+        qnew = x0
         while time.time()-start <= compTimeLimit:
             for ii in range(nPartition):
                 if time.time()-start > (compTimeLimit):
                     break
                 currtf = tfSelection[ii]
                 while 1:
-                    print('k: '+str(k))
+                    if debug:
+                        if np.mod(k,2) == 0:
+                            print('k: '+str(k)+', Convergence: '+str(self.distance(qnew, self.xf)))
+                        else:
+                            print('k: '+str(k)+', Convergence: '+str(self.distance(qnew, x0)))
                     if time.time()-start > (compTimeLimit):
                         break
                     qrand = self.random_sample(x0, currtf, 2, k)
@@ -429,13 +447,7 @@ class STP_RRTStar():
                     if qclosest is not None:
                         if time.time()-start > (compTimeLimit):
                             break
-                        
-                        # updated version for extend() that enforces vmax
-                        # if np.mod(k, 2) == 0:
-                        #     qnew = self.extend(qclosest, qrand, self.max_time, forward=True)  # Start tree
-                        # else:
-                        #     qnew = self.extend(qclosest, qrand, self.max_time, forward=False)  # Goal tree
-                       
+
                         qnew = self.extend(qclosest, qrand, self.max_time) # Original version of extend
 
                         # Validate
@@ -477,8 +489,15 @@ class STP_RRTStar():
                             temp, v_cost = self.validate(v)
                             temp, qnew_cost = self.validate(qnew)
                             
-                            if cost_old + self.distance(v, qnew) < self.distance(qclosest, v) and self.check_route(v, qnew):
-                                cost_old = cost_old + self.distance(v, qnew)
+                            # Cost computed as detection cost + distance cost
+                            prev_detection_cost = (detection_cost_old+(qnew_cost-v_cost))*detection_cost_weight
+                            prev_distance_cost = (distance_cost_old+self.distance(v,qnew))*distance_cost_weight
+                            new_detection_cost = (v_cost-qclosest_cost)*detection_cost_weight
+                            new_distance_cost = self.distance(qclosest,v)*distance_cost_weight
+                            
+                            if prev_detection_cost+prev_distance_cost < new_detection_cost+new_distance_cost and self.check_route(v, qnew, nInterpolate=100):
+                                prev_detection_cost = detection_cost_old+(qnew-v_cost)
+                                prev_distance_cost = distance_cost_old + self.distance(v,qnew)
                                 qmin = v
 
                         # Copilot update: Remove previous edge to qnew
@@ -489,11 +508,6 @@ class STP_RRTStar():
                                 E_RRTCb[str(ii)] = [e for e in E_RRTCb[str(ii)] if e[1] != qnew]
                                 E_RRTCb[str(ii)].append([qmin, qnew])
 
-                        # Original version, not removing any edges in rewiring :(        
-                        # if np.mod(k,2) == 0:
-                        #     E_RRTCa.append([qnew, qmin])
-                        # else:
-                        #     E_RRTCb[str(ii)].append([qnew, qmin])
                 if time.time()-start > (compTimeLimit):
                     break
                 if np.mod(k,2) == 0:
@@ -520,7 +534,6 @@ class STP_RRTStar():
                     pathRRTPb = self.find_path(x0, connectEdge[1], E_RRTCb[str(ii)], forward=False, tf=tfSelection[ii])
 
                     # Combine path into one
-                    # path_RRTP = list(reversed(pathRRTPa))+pathRRTPb[1:-1] # Original, no end point :(
                     path_RRTP = list(reversed(pathRRTPa))+pathRRTPb[1:]
 
                     for fpv in range(len(path_RRTP)-1):
@@ -542,65 +555,9 @@ class STP_RRTStar():
         else:
             return False, end-start, 0, 0, 0, None, V_RRTCa, V_RRTCb, E_RRTCa, E_RRTCb
         
-
-
-
-
-    #def extend(self, q0, q1, max_time, forward=True):
-        """
-        Extend edge from q0 to q1 while enforcing vmax constraint.
-        Handles both forward (start tree) and backward (goal tree) growth.
-        """
-        dx = q1[0] - q0[0]
-        dy = q1[1] - q0[1]
-        dd = np.sqrt(dx**2 + dy**2)
-
-        # Compute required time to travel at vmax
-        dt_required = dd / self.vmax
-
-        # Clamp to max_time if needed
-        dt = min(dt_required, max_time)
-
-        # Ensure valid movement
-        if dt <= 0 or dd == 0:
-            return q0  # No movement possible
-
-        # Normalize direction
-        dxnorm = (dx / dd) * self.vmax * dt
-        dynorm = (dy / dd) * self.vmax * dt
-
-        # Adjust time based on direction
-        if forward:
-            tnew = q0[2] + dt
-        else:
-            tnew = q0[2] - dt
-
-        xnew = q0[0] + dxnorm
-        ynew = q0[1] + dynorm
-
-        return [xnew, ynew, tnew]
-
-    # def extend(self, q0, q1, max_time):
-        """
-        Extend edge from q0 to q1 while enforcing vmax constraint.
-        """
-        dx = q1[0] - q0[0]
-        dy = q1[1] - q0[1]
-        dd = np.sqrt(dx**2 + dy**2)
-
-        # Compute required time to travel at vmax
-        dt_required = dd / self.vmax
-
-        # Clamp to max_time if needed
-        dt = min(dt_required, max_time)
-
-        # Ensure direction is correct
-        if dt <= 0:
-            return q0  # No movement possible
-
-        # Compute new point
-        xnew = q0[0] + (dx / dd) * self.vmax * dt
-        ynew = q0[1] + (dy / dd) * self.vmax * dt
-        tnew = q0[2] + dt
-
-        return [xnew, ynew, tnew]
+    def detection_cost_for_path(self, path):
+        total_detection_cost = 0
+        for i in range(len(path)):
+            temp, temp_cost = self.validate(path[i])
+            total_detection_cost += temp_cost
+        return total_detection_cost
