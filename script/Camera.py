@@ -1,6 +1,7 @@
 import numpy as np
 from shapely import geometry
 from shapely.geometry import Polygon
+import casadi as ca
 
 # Camera object class
 # This is a class for single camera setup, which returns
@@ -10,11 +11,11 @@ class Camera:
         self.x0 = x0
         self.y0 = y0
         self.i = i
-        cam_spec = cam_dict['spec']
+        cam_spec = cam_dict['directional']['spec']
         self.tilt_lim = cam_spec['bound'][i]
         self.fov_ang = cam_spec['fov'][0]
         self.Rc = cam_spec['fov'][1]
-        self.init_angle = cam_dict['spec']['init_angle'][i]
+        self.init_angle = cam_spec['init_angle'][i]
         self.cam_period = cam_spec['cam_time'][0]
         self.cam_dt = cam_spec['cam_time'][1]
         self.cam_fovspeed = cam_spec['panspeed'][i]
@@ -53,11 +54,24 @@ class Camera:
     #     # (b) panspeed in rad/s:
     #     # B = self.cam_fovspeed
     #     return theta_mid + 0.5*A*np.sin(B*t_in)
+    # def get_ctr_theta_t(self, t_in):
+    #     # self.tilt_lim is your two-element bound array (relative to init_angle)
+    #     b1, b2 = float(self.tilt_lim[0]), float(self.tilt_lim[1])
+    #     w = float(self.cam_fovspeed)  # rad/s (your JSON panspeeds look like rad/s)
+    #     return self._bounce_angle(self.init_angle, b1, b2, w, float(t_in))
+
     def get_ctr_theta_t(self, t_in):
-        # self.tilt_lim is your two-element bound array (relative to init_angle)
-        b1, b2 = float(self.tilt_lim[0]), float(self.tilt_lim[1])
-        w = float(self.cam_fovspeed)  # rad/s (your JSON panspeeds look like rad/s)
-        return self._bounce_angle(self.init_angle, b1, b2, w, float(t_in))
+        b1 = self.tilt_lim[0]
+        b2 = self.tilt_lim[1]
+        w = self.cam_fovspeed
+        
+        # Calculate midpoint and amplitude
+        mid = (b1 + b2) / 2
+        amp = (b2 - b1) / 2
+        
+        # Smooth oscillation: angle = midpoint + amp * sin(frequency * t)
+        # This is 100% CasADi compatible and differentiable
+        return self.init_angle + mid + amp * ca.sin(w * t_in)
 
     
     # def get_fov(self, x0, y0, t_in):
