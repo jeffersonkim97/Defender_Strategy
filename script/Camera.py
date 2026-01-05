@@ -141,7 +141,6 @@ class Camera:
         hi = theta0 + max(b1, b2)
         span = hi - lo
         if span <= 1e-12 or abs(w) <= 1e-12:
-            import numpy as np
             return float(np.clip(theta0, lo, hi))
         raw = theta0 + w*t
         period = 2.0*span
