@@ -486,7 +486,7 @@ def generate_map(map_size: Tuple[float, float] = (100.0, 100.0),
         "n": int(cam_period),
         "ncam": int(cam_dict["n"])
     }
-
+    
     return map_in, cam_dict
 
 
