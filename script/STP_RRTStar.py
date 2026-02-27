@@ -452,7 +452,7 @@ class STP_RRTStar():
 
                         # Validate
                         validationCheck, cost = self.validate(qnew)
-                        if validationCheck is True and self.check_route(qclosest, qrand, nInterpolate=100, vehicle_radius=self.vehicle['radius']) is True:
+                        if validationCheck is True and self.check_route(qclosest, qrand, nInterpolate=250, vehicle_radius=self.vehicle['radius']) is True:
                             break
 
                 if np.mod(k,2) == 0:
@@ -495,7 +495,7 @@ class STP_RRTStar():
                             new_detection_cost = (v_cost-qclosest_cost)*detection_cost_weight
                             new_distance_cost = self.distance(qclosest,v)*distance_cost_weight
                             
-                            if prev_detection_cost+prev_distance_cost < new_detection_cost+new_distance_cost and self.check_route(v, qnew, nInterpolate=100):
+                            if prev_detection_cost+prev_distance_cost < new_detection_cost+new_distance_cost and self.check_route(v, qnew, nInterpolate=250):
                                 prev_detection_cost = detection_cost_old+(qnew-v_cost)
                                 prev_distance_cost = distance_cost_old + self.distance(v,qnew)
                                 qmin = v
@@ -514,7 +514,7 @@ class STP_RRTStar():
                     for vj in V_RRTCb[str(ii)]:
                         if self.distance(V_RRTCa[-1], vj) <= proximity:
                             if self.reachable(V_RRTCa[-1], vj, forward=True):
-                                if self.check_route(V_RRTCa[-1], vj, nInterpolate=100):
+                                if self.check_route(V_RRTCa[-1], vj, nInterpolate=250):
                                     connectEdge = [V_RRTCa[-1], vj]
                                     checkIfPathExist = True
                                     break
@@ -522,7 +522,7 @@ class STP_RRTStar():
                     for vj in V_RRTCa:
                         if self.distance(vj, V_RRTCb[str(ii)][-1]) <= proximity:
                             if self.reachable(V_RRTCb[str(ii)][-1], vj, forward=False):
-                                if self.check_route(vj, V_RRTCb[str(ii)][-1], nInterpolate=100):
+                                if self.check_route(vj, V_RRTCb[str(ii)][-1], nInterpolate=250):
                                     connectEdge = [vj, V_RRTCb[str(ii)][-1]]
                                     checkIfPathExist = True
                                     break
