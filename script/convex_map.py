@@ -184,9 +184,38 @@ def generate_non_overlapping_buildings(num_buildings: int,
     for cx, cy in candidates:
         if len(buildings) >= num_buildings:
             break
-        n_verts = rng.randint(4, 8)
-        poly = random_convex_polygon((cx, cy), min_size, max_size, n_verts)
+        # n_verts = rng.randint(3, 10)
+        # poly = random_convex_polygon((cx, cy), min_size, max_size, n_verts)
 
+        # xs, ys = zip(*poly)
+        # bxmin, bymin, bxmax, bymax = min(xs), min(ys), max(xs), max(ys)
+
+        # # Keep in map
+        # if bxmin < 0 or bymin < 0 or bxmax > x_map or bymax > y_map:
+        #     continue
+        
+        poly = []
+        # Attempt to find a valid shape for this specific center
+        for _ in range(5):  # Try 5 different random shapes
+            n_verts = rng.randint(3, 10)
+            candidate_poly = random_convex_polygon((cx, cy), min_size, max_size, n_verts)
+            
+            # Strict Check: Ensure no vertex is within 10 units of corners
+            too_close = False
+            for vx, vy in candidate_poly:
+                dist_start = math.sqrt(vx**2 + vy**2)
+                dist_end = math.sqrt((x_map - vx)**2 + (y_map - vy)**2)
+                if dist_start < 10.0 or dist_end < 10.0:
+                    too_close = True
+                    break
+            
+            if not too_close:
+                poly = candidate_poly
+                break
+        
+        if not poly: # If no valid shape was found after 5 tries, skip this center
+            continue
+        
         xs, ys = zip(*poly)
         bxmin, bymin, bxmax, bymax = min(xs), min(ys), max(xs), max(ys)
 
