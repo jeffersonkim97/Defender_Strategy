@@ -282,6 +282,7 @@ class STP_RRTStar():
                                                                 param_lambda=omni_sensor_detection_param['param_lambda'],
                                                                 param_beta=omni_sensor_detection_param['param_beta'])
         
+        checkDynamic = True
         # Check for dynamic
         n_direc = self.cam_dict['n_direc']
         if n_direc > 0:
@@ -310,18 +311,25 @@ class STP_RRTStar():
 
                 theta = self._bounce_angle(init_angles[i], bound_arr[i,0], bound_arr[i,1], panspeeds[i], tGiven)  # radians, CCW
                 cam_poly = fov_sector_polygon(cx[i], cy[i], theta, fov_half, fov_range)
-                if cam_poly.covers(vehicle_collision_bound):
-                    # checkDynamic = False
-                    # break
-                    cumulative_detection_cost += self.detection_Cost(qa=q, qs=[cx[i], cy[i]],
-                                                                    dt1=direc_sensor['spec']['fov'][1]/100,
-                                                                    dt2=direc_sensor['spec']['fov'][1],
-                                                                    param_lambda=direc_sensor_detection_param['param_lambda'],
-                                                                    param_beta=direc_sensor_detection_param['param_beta'])
+                # if cam_poly.covers(vehicle_collision_bound):
+                if vehicle_collision_bound.intersects(cam_poly):
+                    # turn on for forced avoidance
+                    checkDynamic = False
+                    # return False, 0.0
+                    
+                    # turn on for detection cost
+                    # cumulative_detection_cost += self.detection_Cost(qa=q, qs=[cx[i], cy[i]],
+                                                                    # dt1=direc_sensor['spec']['fov'][1]/100,
+                                                                    # dt2=direc_sensor['spec']['fov'][1],
+                                                                    # param_lambda=direc_sensor_detection_param['param_lambda'],
+                                                                    # param_beta=direc_sensor_detection_param['param_beta'])
         
         # True: Collision-Free
         # False: Collision
-        return (bool(checkInMap) and bool(checkStatic)), cumulative_detection_cost
+        
+        return (bool(checkInMap) and checkStatic and checkDynamic), 0.0
+
+        # return (bool(checkInMap) and bool(checkStatic)), cumulative_detection_cost
 
     def check_route(self, q1, q2, nInterpolate, vehicle_radius=None):
         """
@@ -557,7 +565,10 @@ class STP_RRTStar():
         
     def detection_cost_for_path(self, path):
         total_detection_cost = 0
-        for i in range(len(path)):
-            temp, temp_cost = self.validate(path[i])
-            total_detection_cost += temp_cost
-        return total_detection_cost
+        if path is not None:
+            for i in range(len(path)):
+                temp, temp_cost = self.validate(path[i])
+                total_detection_cost += temp_cost
+            return total_detection_cost
+        else:
+            return 0.0

@@ -147,10 +147,11 @@ def visualize_map_at_time(map_in, cam_dict, t: float, sensor_alpha: float = 0.5,
                     E0 = Ei[0]
                     E1 = Ei[1]
                     ax.plot([E0[0], E1[0]], [E0[1], E1[1]], '-b', alpha=path_alpha)
-        for pi in range(len(rrt_path)-1):
-            p0 = rrt_path[pi]
-            p1 = rrt_path[pi+1]
-            ax.plot([p0[0], p1[0]], [p0[1], p1[1]], '-', color='brown')
+        if rrt_path is not None:
+            for pi in range(len(rrt_path)-1):
+                p0 = rrt_path[pi]
+                p1 = rrt_path[pi+1]
+                ax.plot([p0[0], p1[0]], [p0[1], p1[1]], '-', color='brown')
     
     ax.set_xlim(xmin, xmax)
     ax.set_ylim(ymin, ymax)
