@@ -330,7 +330,7 @@ def run_stp_rrt(map_in, cam_dict, dmap, x0, xf, vmax, map_size, vehicle, compTim
 def run_bilevel(path0, x0, xf, vmax, map_size, cam_dict, building_edge_vec, building_vector_vec,
                  obstacle_constraints, camera_objects, c_param, alpha_direc, alpha_omni,
                  max_iters=50, hard_break_iter=20, N_attk=250, eta=None, warm_start_attacker=False,
-                 cycle_window=4, tol_cost_windowed=1e-3, tol_sensor_windowed=0.1):
+                 cycle_window=4, tol_cost_windowed=1e-3, tol_sensor_windowed=0.1, history_window=20):
     """Faithful port of the alternating loop in cell 905e00e1 (with the
     S_prev -> S_star attacker-cost logging fix already applied).
 
@@ -350,6 +350,15 @@ def run_bilevel(path0, x0, xf, vmax, map_size, cam_dict, building_edge_vec, buil
     cycle_window / tol_*_windowed: a trailing-window convergence check
     (converged_windowed) alongside the original strict single-iteration
     check (converged). See docstring note above is_stable_windowed below.
+
+    history_window: number of trailing (A_star, S_star) pairs to keep and
+    return (as recent_history) for trials that don't reach a pure LNE --
+    this is the raw material for a later mixed-strategy fallback (cluster
+    the recurring strategies in a limit cycle, build a payoff matrix with
+    C_AS, solve the small zero-sum matrix game). Kept small/tail-only
+    (not the full run) to bound output size; recomputing this by re-running
+    the trial is NOT possible from summary numbers alone, so this must be
+    saved during the original Monte Carlo run, not added afterward.
     """
     path_arr = np.array(path0)
     A_prev = path_arr.T
@@ -366,6 +375,7 @@ def run_bilevel(path0, x0, xf, vmax, map_size, cam_dict, building_edge_vec, buil
     converged = False
     n_iters_run = 0
     trace = []
+    recent_history = []  # trailing [{'iter', 'A_star', 'S_star'}, ...], capped to history_window
     attacker_warm = None  # (x_guess, y_guess, T_guess), set after first dense A_star
 
     for it in range(max_iters):
@@ -403,6 +413,9 @@ def run_bilevel(path0, x0, xf, vmax, map_size, cam_dict, building_edge_vec, buil
         sensor_shift = np.linalg.norm(S_star - S_prev)
         print(f'    iter {it}: cost={val_total:.4f}  cost_diff={cost_diff:.6f}  sensor_shift={sensor_shift:.6f}')
         trace.append({'iter': it, 'val_total': val_total, 'cost_diff': cost_diff, 'sensor_shift': sensor_shift})
+        recent_history.append({'iter': it, 'A_star': A_star.copy(), 'S_star': S_star.copy()})
+        if len(recent_history) > history_window:
+            recent_history.pop(0)
 
         is_stable = (sensor_shift < 1e-3) and (cost_diff < 1e-4)
 
@@ -436,7 +449,7 @@ def run_bilevel(path0, x0, xf, vmax, map_size, cam_dict, building_edge_vec, buil
         S_prev = S_star.copy()
 
     val_att_final = float(C_AS(A_star, S_star, cam_dict, camera_objects, c_param, alpha_direc, alpha_omni))
-    return A_star, S_star, converged, n_iters_run, val_att_final, trace, converged_windowed
+    return A_star, S_star, converged, n_iters_run, val_att_final, trace, converged_windowed, recent_history
 
 
 def main():
@@ -451,6 +464,7 @@ def main():
     ap.add_argument('--cycle-window', type=int, default=4)
     ap.add_argument('--tol-cost-windowed', type=float, default=1e-3)
     ap.add_argument('--tol-sensor-windowed', type=float, default=0.1)
+    ap.add_argument('--history-window', type=int, default=20, help='number of trailing (A_star, S_star) pairs saved per trial -- raw material for a later mixed-strategy fallback on trials that never reach a pure LNE')
     ap.add_argument('--rng-seed', type=int, default=2, help='seeds map/sensor generation -- keep identical across parallel workers to share one environment')
     ap.add_argument('--seed-offset', type=int, default=0, help='seeds this process\'s per-trial randomness (vmax draws, RRT* exploration) -- use a distinct value per parallel worker for reproducible, non-overlapping trials')
     ap.add_argument('--out-dir', type=str, default='.')
@@ -509,13 +523,13 @@ def main():
         path0 = run_stp_rrt(map_in, cam_dict, dmap, x0, xf, vmax, map_size, vehicle)
         print(f'  initial RRT* path: {len(path0)} waypoints')
 
-        A_star, S_star, converged, n_iters, cost_converged, trace, converged_windowed = run_bilevel(
+        A_star, S_star, converged, n_iters, cost_converged, trace, converged_windowed, recent_history = run_bilevel(
             path0, x0, xf, vmax, map_size, cam_dict, building_edge_vec, building_vector_vec,
             obstacle_constraints, camera_objects, c_param, alpha_direc, alpha_omni,
             max_iters=args.max_iters, hard_break_iter=args.hard_break_iter, N_attk=args.n_attk,
             eta=args.eta, warm_start_attacker=args.warm_start_attacker,
             cycle_window=args.cycle_window, tol_cost_windowed=args.tol_cost_windowed,
-            tol_sensor_windowed=args.tol_sensor_windowed)
+            tol_sensor_windowed=args.tol_sensor_windowed, history_window=args.history_window)
         print(f'  bilevel converged={converged} (windowed={converged_windowed}) in {n_iters} iters, cost*={cost_converged:.4f}')
 
         alt_costs = []
@@ -558,6 +572,7 @@ def main():
             'n_iters': n_iters,
             'cost_converged': cost_converged,
             'trace': trace,
+            'recent_history': recent_history,
             'alt_costs': alt_costs,
             'best_alt_cost': best_alt,
             'beat': beat,
