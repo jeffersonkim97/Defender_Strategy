@@ -126,8 +126,10 @@ def optimize_defender_static(A_fixed, cam_dict, building_edge_vec, building_vect
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--num-trials', type=int, default=10)
-    ap.add_argument('--rng-seed', type=int, default=2)
+    ap.add_argument('--rng-seed', type=int, default=2, help='seeds map/sensor generation -- keep identical across parallel workers to share one environment')
+    ap.add_argument('--seed-offset', type=int, default=0, help='seeds this process\'s per-trial randomness -- use a distinct value per parallel worker')
     ap.add_argument('--out-dir', type=str, default='.')
+    ap.add_argument('--out-prefix', type=str, default='', help='prepended to output filenames -- avoids collisions when running parallel workers into the same --out-dir')
     args = ap.parse_args()
 
     map_size_world = (100, 100)
@@ -139,6 +141,9 @@ def main():
         panspeed_range=(np.deg2rad(-10), np.deg2rad(10)), cam_period=200, cam_increment=0.2,
         rng_seed=args.rng_seed, balanced_sensors=False, param_lambda=[0.5, 0.5], param_beta=[0.4, 0.25])
     map_size = map_in['st']['size']
+
+    rn.seed(args.seed_offset)
+    np.random.seed(args.seed_offset)
 
     obstacle_constraints = build_obstacle_constraints(map_in)
     building_edge_vec, building_vector_vec = build_defender_geometry(map_in, cam_dict)
@@ -195,7 +200,7 @@ def main():
         })
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_path = os.path.join(args.out_dir, f'{timestamp}_2C_static_fov_partial.json')
+        out_path = os.path.join(args.out_dir, f'{args.out_prefix}{timestamp}_2C_static_fov_partial.json')
         with open(out_path, 'w') as f:
             json.dump(make_json_serializable({'args': vars(args), 'results': results}), f, indent=2)
 
@@ -213,7 +218,7 @@ def main():
     print(json.dumps(summary, indent=2))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = os.path.join(args.out_dir, f'{timestamp}_2C_static_fov.json')
+    out_path = os.path.join(args.out_dir, f'{args.out_prefix}{timestamp}_2C_static_fov.json')
     with open(out_path, 'w') as f:
         json.dump(make_json_serializable({'args': vars(args), 'summary': summary, 'results': results}), f, indent=2)
     print(f'\nSaved: {out_path}')

@@ -1,25 +1,27 @@
 """
-Parallel Monte Carlo launcher: splits --total-trials across --num-workers
-separate OS PROCESSES (not threads -- this workload is CPU-bound IPOPT/RRT*
-work, and Python threads can't parallelize that due to the GIL), each
-running diagnostic_1A_homotopy_check.py end to end with the full validated
-pipeline (bugfixes + damping + warm-start + windowed convergence + 1-B
-multi-homotopy). All workers share the same environment (--rng-seed, so the
-same map/sensor layout) but get distinct, reproducible per-trial randomness
-via --seed-offset. Every worker saves its own JSON as it goes; when all
-workers finish, this script merges them into one combined JSON.
+Generic parallel launcher: splits --total-trials across --num-workers
+separate OS PROCESSES running ANY of our per-trial scripts (baseline_2A_2B_
+defender.py, baseline_2C_static_fov.py, diagnostic_1A_homotopy_check.py, ...)
+as long as they support --num-trials/--rng-seed/--seed-offset/--out-dir/
+--out-prefix. Merges every worker's saved JSON ('results' list) into one
+combined file when all workers finish (or on demand via --merge-only),
+falling back to a worker's latest _partial.json if it was killed mid-run.
 
 Usage:
-  python run_monte_carlo_parallel.py --total-trials 500 --num-workers 5
+  python run_parallel.py --worker-script baseline_2A_2B_defender.py \
+      --total-trials 500 --num-workers 4 --out-dir baseline_2A2B_500 \
+      --result-tag 2A2B_baseline --extra-args "--k-candidates 10 --num-sweeps 3"
 
-To resume/just merge already-finished worker output without re-running:
-  python run_monte_carlo_parallel.py --merge-only --out-dir <dir>
+  python run_parallel.py --worker-script baseline_2C_static_fov.py \
+      --total-trials 500 --num-workers 4 --out-dir baseline_2C_500 \
+      --result-tag 2C_static_fov
 """
 
 import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -27,10 +29,12 @@ from datetime import datetime
 from glob import glob
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-WORKER_SCRIPT = os.path.join(SCRIPT_DIR, 'diagnostic_1A_homotopy_check.py')
 
 
 def launch_workers(args, out_dir):
+    worker_script = os.path.join(SCRIPT_DIR, args.worker_script)
+    extra = shlex.split(args.extra_args) if args.extra_args else []
+
     base = args.total_trials // args.num_workers
     remainder = args.total_trials % args.num_workers
     procs = []
@@ -41,22 +45,13 @@ def launch_workers(args, out_dir):
         prefix = f'worker{w}_'
         log_path = os.path.join(out_dir, f'{prefix}log.txt')
         cmd = [
-            sys.executable, WORKER_SCRIPT,
+            sys.executable, worker_script,
             '--num-trials', str(n_trials),
-            '--k-alt', str(args.k_alt),
-            '--n-attk', str(args.n_attk),
-            '--max-iters', str(args.max_iters),
-            '--hard-break-iter', str(args.hard_break_iter),
-            '--eta', str(args.eta),
-            '--warm-start-attacker',
-            '--cycle-window', str(args.cycle_window),
-            '--tol-cost-windowed', str(args.tol_cost_windowed),
-            '--tol-sensor-windowed', str(args.tol_sensor_windowed),
             '--rng-seed', str(args.rng_seed),
             '--seed-offset', str(w * 10000 + args.seed_offset_base),
             '--out-dir', out_dir,
             '--out-prefix', prefix,
-        ]
+        ] + extra
         print(f'[launcher] worker {w}: {n_trials} trials, seed_offset={w*10000+args.seed_offset_base}, log={log_path}')
         log_f = open(log_path, 'w')
         proc = subprocess.Popen(cmd, cwd=SCRIPT_DIR, stdout=log_f, stderr=subprocess.STDOUT)
@@ -79,12 +74,24 @@ def launch_workers(args, out_dir):
     return exit_codes
 
 
-def merge_results(out_dir):
-    # Group by worker index and prefer each worker's FINAL output; if a
-    # worker never finished (e.g. killed mid-run by a forced OS restart --
-    # this happened in practice, see RAL_Review_Fix_0810.md), fall back to
-    # its latest incremental _partial.json so that progress isn't lost.
-    all_files = glob(os.path.join(out_dir, 'worker*_*_1A_homotopy_diagnostic*.json'))
+def auto_summary(all_results):
+    """Generic: mean/std of every numeric field present across all result dicts."""
+    if not all_results:
+        return {}
+    numeric_keys = [k for k, v in all_results[0].items() if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    summary = {}
+    for k in numeric_keys:
+        vals = [r[k] for r in all_results if isinstance(r.get(k), (int, float)) and not isinstance(r.get(k), bool)]
+        if vals:
+            mean = sum(vals) / len(vals)
+            var = sum((x - mean) ** 2 for x in vals) / len(vals)
+            summary[f'mean_{k}'] = mean
+            summary[f'std_{k}'] = var ** 0.5
+    return summary
+
+
+def merge_results(out_dir, result_tag):
+    all_files = glob(os.path.join(out_dir, f'worker*_*_{result_tag}*.json'))
     by_worker = {}
     for path in all_files:
         base = os.path.basename(path)
@@ -96,7 +103,7 @@ def merge_results(out_dir):
         by_worker.setdefault(w, {'final': [], 'partial': []})[bucket].append(path)
 
     if not by_worker:
-        print(f'[merge] no worker*_..._1A_homotopy_diagnostic*.json files found in {out_dir}')
+        print(f'[merge] no worker*_..._{result_tag}*.json files found in {out_dir}')
         return None
 
     all_results = []
@@ -116,28 +123,16 @@ def merge_results(out_dir):
         per_worker_args.append({'file': os.path.basename(path), 'source': source, 'args': d['args']})
         print(f'[merge] worker {w}: loaded {len(d["results"])} trials from {os.path.basename(path)} ({source})')
 
-    # renumber trial indices to be unique across the merged set
     for i, r in enumerate(all_results):
         r['global_trial'] = i
 
-    n_converged = sum(1 for r in all_results if r.get('converged'))
-    n_converged_windowed = sum(1 for r in all_results if r.get('converged_windowed'))
-    n_beat = sum(1 for r in all_results if r.get('beat'))
-    margins = [r['margin_pct'] for r in all_results if r.get('beat')]
-
-    summary = {
-        'num_trials': len(all_results),
-        'num_workers': len(per_worker_args),
-        'converged_strict_rate_pct': 100.0 * n_converged / len(all_results) if all_results else 0.0,
-        'converged_windowed_rate_pct': 100.0 * n_converged_windowed / len(all_results) if all_results else 0.0,
-        'beat_rate_pct': 100.0 * n_beat / len(all_results) if all_results else 0.0,
-        'mean_margin_pct_when_beat': sum(margins) / len(margins) if margins else 0.0,
-    }
+    summary = {'num_trials': len(all_results), 'num_workers': len(per_worker_args)}
+    summary.update(auto_summary(all_results))
     print('\n=== MERGED SUMMARY ===')
     print(json.dumps(summary, indent=2))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = os.path.join(out_dir, f'{timestamp}_merged_monte_carlo.json')
+    out_path = os.path.join(out_dir, f'{timestamp}_merged_{result_tag}.json')
     with open(out_path, 'w') as f:
         json.dump({'summary': summary, 'per_worker_args': per_worker_args, 'results': all_results}, f, indent=2)
     print(f'\n[merge] saved combined results ({len(all_results)} trials) to: {out_path}')
@@ -146,20 +141,15 @@ def merge_results(out_dir):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument('--worker-script', type=str, required=True, help='filename (in this dir) of the per-trial script to run, e.g. baseline_2A_2B_defender.py')
+    ap.add_argument('--result-tag', type=str, required=True, help='the tag in the worker script\'s output filenames, e.g. "2A2B_baseline" or "2C_static_fov" (or "1A_homotopy_diagnostic")')
+    ap.add_argument('--extra-args', type=str, default='', help='extra CLI args passed through verbatim to each worker, e.g. "--k-candidates 10 --num-sweeps 3"')
     ap.add_argument('--total-trials', type=int, default=500)
-    ap.add_argument('--num-workers', type=int, default=5)
-    ap.add_argument('--k-alt', type=int, default=3)
-    ap.add_argument('--n-attk', type=int, default=100)
-    ap.add_argument('--max-iters', type=int, default=50)
-    ap.add_argument('--hard-break-iter', type=int, default=30)
-    ap.add_argument('--eta', type=float, default=0.3)
-    ap.add_argument('--cycle-window', type=int, default=4)
-    ap.add_argument('--tol-cost-windowed', type=float, default=1e-3)
-    ap.add_argument('--tol-sensor-windowed', type=float, default=0.1)
+    ap.add_argument('--num-workers', type=int, default=4)
     ap.add_argument('--rng-seed', type=int, default=2, help='shared across all workers -> same environment/map')
     ap.add_argument('--seed-offset-base', type=int, default=0)
     ap.add_argument('--out-dir', type=str, default='.')
-    ap.add_argument('--merge-only', action='store_true', help='skip launching workers; just merge existing worker*_..._1A_homotopy_diagnostic.json files in --out-dir')
+    ap.add_argument('--merge-only', action='store_true', help='skip launching workers; just merge existing worker output in --out-dir')
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -169,7 +159,7 @@ def main():
         launch_workers(args, args.out_dir)
         print(f'[launcher] all workers done in {time.time()-t0:.0f}s')
 
-    merge_results(args.out_dir)
+    merge_results(args.out_dir, args.result_tag)
 
 
 if __name__ == '__main__':
